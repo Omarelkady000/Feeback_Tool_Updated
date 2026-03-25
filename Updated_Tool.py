@@ -1,12 +1,11 @@
 import streamlit as st
 import re
-import requests
 import math
 import csv
 import io
 from pathlib import Path
 from docx import Document
-from docx.shared import Pt, Inches, RGBColor
+from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 
@@ -36,119 +35,99 @@ def tc_to_frames(tc, fps_choice):
             return math.floor((h * 3600 * base) + (m * 60 * base) + (s * base) + f)
     except: return 0
 
-def apply_style(run, size=11, bold=False, color=None):
+# --- 2. STYLING HELPER (Restored to Original v5.2) ---
+def set_font(run, size=11, bold=False):
     run.font.name = 'Arial'
     run._element.rPr.rFonts.set(qn('w:ascii'), 'Arial')
     run.font.size = Pt(size)
     run.bold = bold
-    if color:
-        run.font.color.rgb = color
 
-# --- 2. UI SETUP ---
+# --- 3. UI SETUP ---
 st.set_page_config(page_title="QOMY Feedback Tool", page_icon="🎬", layout="centered")
 
 st.title("🎬 QOMY Feedback Tool")
 st.markdown("Upload your Premiere CSV to generate formatted Feedback Docs and XML Markers.")
 
-# Global Settings in Sidebar
-st.sidebar.header("Settings")
-fps_choice = st.sidebar.selectbox("Sequence FPS:", list(XML_TIMEBASE_MAP.keys()), index=6)
+# Global Settings & Instruction Sentence
+st.sidebar.header("GLOBAL SETTINGS")
+st.sidebar.write("Select Premiere Sequence FPS:") # Restored sentence
+fps_choice = st.sidebar.selectbox("FPS Dropdown:", list(XML_TIMEBASE_MAP.keys()), index=6, label_visibility="collapsed")
 
-# --- SINGLE MODE WORKFLOW ---
-csv_file = st.file_uploader("Upload Premiere Markers CSV", type="csv")
-logo_file = st.file_uploader("Upload Brand Logo (Optional)", type=["png", "jpg"])
+# --- WORKFLOW ---
+csv_file = st.file_uploader("Select Premiere CSV", type="csv")
+logo_file = st.file_uploader("Upload Logo (Optional)", type=["png", "jpg"])
 
 if csv_file:
     try:
         raw_data = csv_file.read()
         content = ""
-        # Handle various CSV encodings
         for enc in ['utf-8-sig', 'utf-16', 'cp1252']:
             try:
                 content = raw_data.decode(enc)
                 if "Marker Name" in content: break
             except: continue
         
-        if "Marker Name" not in content:
-            st.error("Invalid CSV format. Please ensure you exported 'Markers' from Premiere.")
-        else:
-            dialect = csv.Sniffer().sniff(content[:2000])
-            reader = csv.DictReader(content.splitlines(), dialect=dialect)
-            
-            doc = Document()
-            
-            # 1. Logo Handling
-            if logo_file:
-                doc.add_picture(io.BytesIO(logo_file.read()), width=Inches(1.5))
-                doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
-            
-            # 2. Header (Filename)
-            title_name = Path(csv_file.name).stem
-            header = doc.add_paragraph()
-            header.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run_h = header.add_run(title_name)
-            apply_style(run_h, size=14, bold=True)
+        dialect = csv.Sniffer().sniff(content[:2000])
+        reader = csv.DictReader(content.splitlines(), dialect=dialect)
+        
+        doc = Document()
+        
+        # 1. Logo
+        if logo_file:
+            doc.add_picture(io.BytesIO(logo_file.read()), width=Inches(1.5))
+            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # 2. Title (CSV Name)
+        title_para = doc.add_heading('', 0)
+        title_name = Path(csv_file.name).stem
+        title_run = title_para.add_run(title_name)
+        set_font(title_run, size=18, bold=True)
+        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-            xml_markers = ""
+        xml_markers = ""
+        
+        for row in reader:
+            name = row.get('Marker Name', '').strip()
+            desc = row.get('Description', '').strip()
+            comment = name if len(name) >= len(desc) else desc
             
-            for row in reader:
-                name = row.get('Marker Name', '').strip()
-                desc = row.get('Description', '').strip()
-                # Premiere sometimes puts the text in Name or Description
-                comment = name if len(name) >= len(desc) else desc
-                
-                in_tc = row.get('In', '00:00:00:00')
-                out_tc = row.get('Out', in_tc)
-                
-                # Timestamp Formatting (Exact match to your reference)
-                ts_display = in_tc if in_tc == out_tc else f"{in_tc} - {out_tc}"
-                
-                # Color Logic (Red for remove/cut)
-                is_negative = bool(re.search(r'\b(remove|cut|delete)\b', comment, re.IGNORECASE))
-                text_color = RGBColor(255, 0, 0) if is_negative else None
-                
-                # Add Line: Timecode + Double Space + Comment (Arial)
-                p = doc.add_paragraph()
-                run_ts = p.add_run(f"{ts_display}  ")
-                apply_style(run_ts, bold=True, color=text_color)
-                
-                run_cmt = p.add_run(comment)
-                apply_style(run_cmt, color=text_color)
-                
-                # XML logic
-                start_f = tc_to_frames(in_tc, fps_choice)
-                end_f = tc_to_frames(out_tc, fps_choice)
-                clean_cmt = comment.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                xml_markers += f"<marker><name>NOTE</name><comment>{clean_cmt}</comment><in>{int(start_f)}</in><out>{int(end_f)}</out></marker>"
+            in_tc = row.get('In', '00:00:00:00')
+            out_tc = row.get('Out', in_tc)
+            
+            ts_display = in_tc if in_tc == out_tc else f"{in_tc} - {out_tc}"
+            
+            # 3. Add to Word Doc (Restored to exact Original v5.2 layout)
+            p_ts = doc.add_paragraph()
+            run_ts = p_ts.add_run(ts_display)
+            set_font(run_ts, bold=True)
 
-            # XML Finalizing
-            timebase = XML_TIMEBASE_MAP.get(fps_choice, "30")
-            ntsc = "TRUE" if (".97" in fps_choice or ".94" in fps_choice) else "FALSE"
-            full_xml = f'<?xml version="1.0" encoding="UTF-8"?><xmeml version="4"><project><children><sequence><name>QOMY_IMPORT</name><rate><timebase>{timebase}</timebase><ntsc>{ntsc}</ntsc></rate><media><video><format><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></format></video></media>{xml_markers}</sequence></children></project></xmeml>'
+            p_cmt = doc.add_paragraph()
+            run_cmt = p_cmt.add_run(comment)
+            set_font(run_cmt)
+            
+            # XML logic
+            start_f = tc_to_frames(in_tc, fps_choice)
+            end_f = tc_to_frames(out_tc, fps_choice)
+            clean_cmt = comment.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            xml_markers += f"<marker><name>NOTE</name><comment>{clean_cmt}</comment><in>{int(start_f)}</in><out>{int(end_f)}</out></marker>"
 
-            # Create Downloadable Buffers
-            doc_io = io.BytesIO()
-            doc.save(doc_io)
-            doc_io.seek(0)
-            
-            st.divider()
-            st.success(f"Successfully processed: {title_name}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button(
-                    label="⬇️ Download Word Doc",
-                    data=doc_io,
-                    file_name=f"{title_name}_Feedback.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
-            with col2:
-                st.download_button(
-                    label="⬇️ Download Premiere XML",
-                    data=full_xml,
-                    file_name=f"{title_name}_Markers.xml",
-                    mime="application/xml"
-                )
+        # Final Buffers
+        doc_io = io.BytesIO()
+        doc.save(doc_io)
+        doc_io.seek(0)
+        
+        timebase = XML_TIMEBASE_MAP.get(fps_choice, "30")
+        ntsc = "TRUE" if (".97" in fps_choice or ".94" in fps_choice) else "FALSE"
+        full_xml = f'<?xml version="1.0" encoding="UTF-8"?><xmeml version="4"><project><children><sequence><name>QOMY_FEEDBACK</name><rate><timebase>{timebase}</timebase><ntsc>{ntsc}</ntsc></rate><media><video><format><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></format></video></media>{xml_markers}</sequence></children></project></xmeml>'
+
+        st.divider()
+        st.success(f"Processed: {title_name}")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button("⬇️ Download Docx", data=doc_io, file_name=f"{title_name}.docx")
+        with c2:
+            st.download_button("⬇️ Download XML", data=full_xml, file_name=f"{title_name}.xml")
 
     except Exception as e:
-        st.error(f"Processing failed: {e}")
+        st.error(f"Error: {e}")
