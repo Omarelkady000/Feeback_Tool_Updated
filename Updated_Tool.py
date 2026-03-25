@@ -4,7 +4,7 @@ import requests
 import math
 import csv
 import io
-import zipfile
+import os
 from pathlib import Path
 from docx import Document
 from docx.shared import Pt, Inches
@@ -43,9 +43,8 @@ def set_font(run, size=11, bold=False):
     run.font.size = Pt(size)
     run.bold = bold
 
-# --- 2. STREAMLIT UI SETUP ---
-st.set_page_config(page_title="Premiere Workflow v5.5", layout="centered")
-
+# --- 2. UI SETUP ---
+st.set_page_config(page_title="Premiere Workflow Suite", layout="centered")
 st.title("🎬 Premiere Workflow Suite")
 
 st.sidebar.header("GLOBAL SETTINGS")
@@ -53,11 +52,11 @@ fps_choice = st.sidebar.selectbox("Select Premiere Sequence FPS:", list(XML_TIME
 
 tab1, tab2 = st.tabs(["EDITOR MODE", "LEADER MODE"])
 
-# --- EDITOR MODE (Doc to XML) ---
+# --- EDITOR MODE ---
 with tab1:
     st.header("EDITOR MODE: Doc to XML")
     url = st.text_input("Google Doc URL:")
-    custom_name = st.text_input("Custom Output Name (for XML):", value="Markers")
+    editor_custom_name = st.text_input("Custom Output Name:", value="Markers")
 
     if st.button("GENERATE XML"):
         if not url:
@@ -83,16 +82,15 @@ with tab1:
                     xml += f"<marker><name>NOTE</name><comment>{clean_cmt}</comment><in>{int(start_f)}</in><out>{int(end_f)}</out></marker>"
                 
                 xml += "</sequence></children></project></xmeml>"
-                st.download_button("⬇️ Download XML", data=xml, file_name=f"{custom_name}.xml")
+                st.download_button("⬇️ Download XML", data=xml, file_name=f"{editor_custom_name}.xml")
             except Exception as e:
                 st.error(f"Error: {e}")
 
-# --- LEADER MODE (CSV to DOCX/XML) ---
+# --- LEADER MODE ---
 with tab2:
     st.header("LEADER MODE: CSV to Doc/XML")
     csv_file = st.file_uploader("Select Premiere CSV", type="csv")
-    logo_file = st.file_uploader("Upload Brand Logo (Optional)", type=["png", "jpg"])
-    leader_custom_name = st.text_input("Final Filename (for Docx & XML):", placeholder="Enter name here...")
+    logo_file = st.file_uploader("Upload Logo (Optional)", type=["png", "jpg"])
 
     if csv_file:
         try:
@@ -112,10 +110,9 @@ with tab2:
                 doc.add_picture(io.BytesIO(logo_file.read()), width=Inches(1.5))
                 doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
             
-            # Title Heading
             title_para = doc.add_heading('', 0)
-            display_title = leader_custom_name if leader_custom_name else Path(csv_file.name).stem
-            title_run = title_para.add_run(display_title)
+            title_name = Path(csv_file.name).stem
+            title_run = title_para.add_run(title_name)
             set_font(title_run, size=18, bold=True)
             title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
@@ -126,9 +123,9 @@ with tab2:
                 comment = name if len(name) >= len(desc) else desc
                 in_tc = row.get('In', '00:00:00:00')
                 out_tc = row.get('Out', in_tc)
+                
                 ts_display = in_tc if in_tc == out_tc else f"{in_tc} - {out_tc}"
                 
-                # Word Doc Paragraphs
                 p_ts = doc.add_paragraph()
                 run_ts = p_ts.add_run(ts_display)
                 set_font(run_ts, bold=True)
@@ -136,33 +133,25 @@ with tab2:
                 run_cmt = p_cmt.add_run(comment)
                 set_font(run_cmt)
                 
-                # XML Logic
                 start_f = tc_to_frames(in_tc, fps_choice)
                 end_f = tc_to_frames(out_tc, fps_choice)
                 clean_cmt = comment.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                 xml_markers += f"<marker><name>NOTE</name><comment>{clean_cmt}</comment><in>{int(start_f)}</in><out>{int(end_f)}</out></marker>"
 
-            # Final Save Logic (Creates both files in a ZIP)
-            timebase = XML_TIMEBASE_MAP.get(fps_choice, "30")
-            ntsc = "TRUE" if (".97" in fps_choice or ".94" in fps_choice) else "FALSE"
-            full_xml = f'<?xml version="1.0" encoding="UTF-8"?><xmeml version="4"><project><children><sequence><name>CSV_IMPORT</name><rate><timebase>{timebase}</timebase><ntsc>{ntsc}</ntsc></rate><media><video><format><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></format></video></media>{xml_markers}</sequence></children></project></xmeml>'
-            
+            # Prepare Buffers
             doc_buffer = io.BytesIO()
             doc.save(doc_buffer)
             
-            # Create ZIP in memory
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w") as zf:
-                base_name = leader_custom_name if leader_custom_name else Path(csv_file.name).stem
-                zf.writestr(f"{base_name}.docx", doc_buffer.getvalue())
-                zf.writestr(f"{base_name}.xml", full_xml)
-            
-            st.download_button(
-                label="⬇️ DOWNLOAD DOCX & XML (ZIP)",
-                data=zip_buffer.getvalue(),
-                file_name=f"{base_name}_Package.zip",
-                mime="application/zip"
-            )
+            timebase = XML_TIMEBASE_MAP.get(fps_choice, "30")
+            ntsc = "TRUE" if (".97" in fps_choice or ".94" in fps_choice) else "FALSE"
+            full_xml = f'<?xml version="1.0" encoding="UTF-8"?><xmeml version="4"><project><children><sequence><name>CSV_IMPORT</name><rate><timebase>{timebase}</timebase><ntsc>{ntsc}</ntsc></rate><media><video><format><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></format></video></media>{xml_markers}</sequence></children></project></xmeml>'
+
+            st.success(f"Processed: {title_name}")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button("⬇️ Download Docx", data=doc_buffer.getvalue(), file_name=f"{title_name}.docx")
+            with col2:
+                st.download_button("⬇️ Download XML", data=full_xml, file_name=f"{title_name}.xml")
 
         except Exception as e:
             st.error(f"Error: {e}")
