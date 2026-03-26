@@ -11,12 +11,12 @@ from docx.oxml.ns import qn
 
 # --- 1. CONFIGURATION DATA ---
 XML_TIMEBASE_MAP = {
-    "10.00 fps": "10", "12.00 fps": "12", "15.00 fps": "15",
-    "23.976 fps": "24", "24.00 fps": "24", "25.00 fps": "25", "29.97 fps": "30",
-    "30.00 fps": "30", "50.00 fps": "50", "59.94 fps": "60", "60.00 fps": "60"
+    "10.00 fps": 10, "12.00 fps": 12, "15.00 fps": 15,
+    "23.976 fps": 23.976, "24.00 fps": 24, "25.00 fps": 25, 
+    "29.97 fps": 29.97, "30.00 fps": 30, "50.00 fps": 50, 
+    "59.94 fps": 59.94, "60.00 fps": 60
 }
 
-# Added Resolution Mapping
 RES_MAP = {
     "1080x1920 (Vertical HD)": (1080, 1920),
     "1920x1080 (Landscape HD)": (1920, 1080),
@@ -25,24 +25,20 @@ RES_MAP = {
     "1080x1080 (Square)": (1080, 1080)
 }
 
-def tc_to_frames(tc, fps_choice):
+def tc_to_frames(tc, source_fps, target_fps):
     try:
         clean_tc = tc.replace(';', ':')
-        parts = list(map(int, clean_tc.split(':')))
-        h, m, s, f = parts
-        total_minutes = (h * 60) + m
-        if "29.97" in fps_choice:
-            frame_number = ((total_minutes * 60) + s) * 30 + f
-            drop_frames = 2 * (total_minutes - (total_minutes // 10))
-            return frame_number - drop_frames
-        elif "59.94" in fps_choice:
-            frame_number = ((total_minutes * 60) + s) * 60 + f
-            drop_frames = 4 * (total_minutes - (total_minutes // 10))
-            return frame_number - drop_frames
-        else:
-            base = 24 if "23.976" in fps_choice else float(fps_choice.split(' ')[0])
-            return math.floor((h * 3600 * base) + (m * 60 * base) + (s * base) + f)
-    except: return 0
+        h, m, s, f = list(map(int, clean_tc.split(':')))
+        
+        # Convert timecode to absolute decimal seconds using the Source FPS
+        # This prevents the "rollover" because we read :29 as part of the Source base
+        total_seconds = (h * 3600) + (m * 60) + s + (f / source_fps)
+        
+        # Convert those seconds into frames for the Target XML
+        # We use math.floor to match Premiere's internal rounding
+        return math.floor(total_seconds * target_fps)
+    except:
+        return 0
 
 def set_font(run, size=11, bold=False):
     run.font.name = 'Arial'
@@ -59,9 +55,17 @@ st.markdown("Upload your Premiere CSV to generate formatted Feedback Docs and XM
 # Sidebar Settings
 st.sidebar.header("GLOBAL SETTINGS")
 
-st.sidebar.write("Select Premiere Sequence FPS:")
-fps_choice = st.sidebar.selectbox("FPS Dropdown:", list(XML_TIMEBASE_MAP.keys()), index=6, label_visibility="collapsed")
+# Request: Instruction sentence and Target FPS
+st.sidebar.write("Select Premiere Sequence FPS (Target):")
+target_fps_choice = st.sidebar.selectbox("Target FPS Dropdown:", list(XML_TIMEBASE_MAP.keys()), index=6, label_visibility="collapsed")
+target_fps_val = XML_TIMEBASE_MAP[target_fps_choice]
 
+# Fix: Added Source FPS to prevent rollover
+st.sidebar.write("Select Source CSV FPS (Original):")
+source_fps_choice = st.sidebar.selectbox("Source FPS Dropdown:", list(XML_TIMEBASE_MAP.keys()), index=7, label_visibility="collapsed")
+source_fps_val = XML_TIMEBASE_MAP[source_fps_choice]
+
+# Request: Resolution dropdown
 st.sidebar.write("Select Sequence Resolution:")
 res_choice = st.sidebar.selectbox("Resolution Dropdown:", list(RES_MAP.keys()), index=0, label_visibility="collapsed")
 width, height = RES_MAP[res_choice]
@@ -85,14 +89,13 @@ if csv_file:
         
         doc = Document()
         
-        # 1. Logo
         if logo_file:
             doc.add_picture(io.BytesIO(logo_file.read()), width=Inches(1.5))
             doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
         
-        # 2. Title Logic
+        # Request: Filename logic ([base]feedback)
         base_name = Path(csv_file.name).stem
-        final_filename = f"{base_name}feedback" # Adjusted per request 1
+        final_filename = f"{base_name}feedback"
         
         title_para = doc.add_heading('', 0)
         title_run = title_para.add_run(base_name)
@@ -110,7 +113,7 @@ if csv_file:
             out_tc = row.get('Out', in_tc)
             ts_display = in_tc if in_tc == out_tc else f"{in_tc} - {out_tc}"
             
-            # Word Doc Paragraphs
+            # Word Doc Paragraphs (Arial, Black)
             p_ts = doc.add_paragraph()
             run_ts = p_ts.add_run(ts_display)
             set_font(run_ts, bold=True)
@@ -119,22 +122,21 @@ if csv_file:
             run_cmt = p_cmt.add_run(comment)
             set_font(run_cmt)
             
-            # XML Logic
-            start_f = tc_to_frames(in_tc, fps_choice)
-            end_f = tc_to_frames(out_tc, fps_choice)
+            # XML Logic (Corrected Math)
+            start_f = tc_to_frames(in_tc, source_fps_val, target_fps_val)
+            end_f = tc_to_frames(out_tc, source_fps_val, target_fps_val)
             clean_cmt = comment.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             xml_markers += f"<marker><name>NOTE</name><comment>{clean_cmt}</comment><in>{int(start_f)}</in><out>{int(end_f)}</out></marker>"
 
-        # Prepare Buffers
         doc_io = io.BytesIO()
         doc.save(doc_io)
         doc_io.seek(0)
         
-        timebase = XML_TIMEBASE_MAP.get(fps_choice, "30")
-        ntsc = "TRUE" if (".97" in fps_choice or ".94" in fps_choice) else "FALSE"
+        # XML Header Configuration
+        timebase_str = "24" if target_fps_val == 23.976 else str(int(target_fps_val))
+        ntsc_bool = "TRUE" if target_fps_val in [23.976, 29.97, 59.94] else "FALSE"
         
-        # Adjusted Sequence Name per request 1 and Resolution per request 2
-        full_xml = f'<?xml version="1.0" encoding="UTF-8"?><xmeml version="4"><project><children><sequence><name>{final_filename}</name><rate><timebase>{timebase}</timebase><ntsc>{ntsc}</ntsc></rate><media><video><format><samplecharacteristics><width>{width}</width><height>{height}</height></samplecharacteristics></format></video></media>{xml_markers}</sequence></children></project></xmeml>'
+        full_xml = f'<?xml version="1.0" encoding="UTF-8"?><xmeml version="4"><project><children><sequence><name>{final_filename}</name><rate><timebase>{timebase_str}</timebase><ntsc>{ntsc_bool}</ntsc></rate><media><video><format><samplecharacteristics><width>{width}</width><height>{height}</height></samplecharacteristics></format></video></media>{xml_markers}</sequence></children></project></xmeml>'
 
         st.divider()
         st.success(f"Processed: {base_name}")
