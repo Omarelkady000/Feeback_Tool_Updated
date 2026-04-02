@@ -71,14 +71,23 @@ if csv_file:
     try:
         raw_data = csv_file.read()
         content = ""
+        # Try different encodings to prevent crashes
         for enc in ['utf-8-sig', 'utf-16', 'cp1252']:
             try:
                 content = raw_data.decode(enc)
                 if "Marker Name" in content: break
             except: continue
         
-        dialect = csv.Sniffer().sniff(content[:2000])
-        reader = csv.DictReader(content.splitlines(), dialect=dialect)
+        # --- SMART DELIMITER LOGIC ---
+        # Detects if the file is Tab-Separated (TSV) or Comma-Separated (CSV)
+        lines = content.splitlines()
+        if len(lines) > 0:
+            first_line = lines[0]
+            # If a Tab is in the header, use Tab as delimiter, otherwise use Comma
+            delim = '\t' if '\t' in first_line else ','
+            reader = csv.DictReader(lines, delimiter=delim)
+        else:
+            raise ValueError("The uploaded file is empty.")
         
         doc = Document()
         
@@ -95,6 +104,7 @@ if csv_file:
         for row in reader:
             name = row.get('Marker Name', '').strip()
             desc = row.get('Description', '').strip()
+            # Use name if longer, else use description
             comment = name if len(name) >= len(desc) else desc
             
             in_tc = row.get('In', '00:00:00:00')
@@ -113,13 +123,16 @@ if csv_file:
             # XML Logic
             start_f = tc_to_frames(in_tc, fps_choice)
             end_f = tc_to_frames(out_tc, fps_choice)
+            # Clean special characters for XML safety
             clean_cmt = comment.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             xml_markers += f"<marker><name>NOTE</name><comment>{clean_cmt}</comment><in>{int(start_f)}</in><out>{int(end_f)}</out></marker>"
 
+        # Prepare Word Document buffer
         doc_io = io.BytesIO()
         doc.save(doc_io)
         doc_io.seek(0)
         
+        # Prepare XML parameters
         timebase = XML_TIMEBASE_MAP.get(fps_choice, "30")
         ntsc = "TRUE" if (".97" in fps_choice or ".94" in fps_choice) else "FALSE"
         
