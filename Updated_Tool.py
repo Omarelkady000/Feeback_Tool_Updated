@@ -150,4 +150,4 @@ if csv_file:
     except Exception as e:
         st.error(f"Error: {e}")
 
-this code is for putting markere in premiere now i wantto update just some small things , 1st i want instead of the output doc i wanted to be pdf, 2nd i want the the output sequence to always have square pixels , 3rd for the headers of the pdf use oswald medium and for the body text use satoshi regular , dont change anything specially with the fps calculations
+
